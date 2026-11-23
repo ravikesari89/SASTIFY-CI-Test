@@ -28,7 +28,7 @@ jobs:
 
           $body = @{
             project = "SASTIFY-JuiceShop-GitHub-Actions"
-            repository_url = "https://github.com/juice-shop/juice-shop.git"
+            repository_url = "https://github.com/ravikesari89/SASTIFY-Clean-Test.git"
             branch = "master"
             provider = "github"
             scope = "sast"
