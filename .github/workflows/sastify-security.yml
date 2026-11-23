@@ -1,0 +1,23 @@
+name: SASTIFY V60 Security Scan
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sastify:
+    runs-on: [self-hosted, Windows, X64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify SASTIFY V60
+        shell: powershell
+        run: |
+          $response = Invoke-RestMethod -Uri "http://localhost:5000"
+          Write-Host "SASTIFY V60 is reachable"
