@@ -1,3 +1,4 @@
+
 name: SASTIFY V60 Security Scan
 
 on:
@@ -17,7 +18,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify SASTIFY V60
-        shell: powershell
+        shell: powershell -ExecutionPolicy Bypass {0}
         run: |
-          $response = Invoke-RestMethod -Uri "http://localhost:5000"
-          Write-Host "SASTIFY V60 is reachable"
+          try {
+            $response = Invoke-WebRequest -Uri "http://localhost:5000" -UseBasicParsing
+            Write-Host "SASTIFY V60 is reachable. HTTP Status: $($response.StatusCode)"
+          }
+          catch {
+            Write-Host "SASTIFY V60 connectivity failed: $($_.Exception.Message)"
+            exit 1
+          }
