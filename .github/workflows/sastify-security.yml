@@ -14,17 +14,85 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Verify SASTIFY V60
+      - name: Trigger SASTIFY Scan and Enforce Security Gate
         shell: powershell -ExecutionPolicy Bypass {0}
+        env:
+          SASTIFY_URL: ${{ secrets.SASTIFY_URL }}
+          SASTIFY_TOKEN: ${{ secrets.SASTIFY_TOKEN }}
         run: |
-          try {
-            $response = Invoke-WebRequest -Uri "http://localhost:5000" -UseBasicParsing
-            Write-Host "SASTIFY V60 is reachable. HTTP Status: $($response.StatusCode)"
+          $ErrorActionPreference = "Stop"
+
+          $headers = @{
+            Authorization = "Bearer $env:SASTIFY_TOKEN"
           }
-          catch {
-            Write-Host "SASTIFY V60 connectivity failed: $($_.Exception.Message)"
-            exit 1
+
+          $body = @{
+            project = "SASTIFY-JuiceShop-GitHub-Actions"
+            repository_url = "https://github.com/juice-shop/juice-shop.git"
+            branch = "master"
+            provider = "github"
+            scope = "sast"
+            detection_engine = "both"
+            run_sca = $false
+            use_nvd = $false
+            repo_username = ""
+            repo_token = ""
+          } | ConvertTo-Json
+
+          Write-Host "Triggering SASTIFY V60 scan..."
+
+          $scan = Invoke-RestMethod `
+            -Uri "$env:SASTIFY_URL/api/ci/v1/scans" `
+            -Method Post `
+            -Headers $headers `
+            -ContentType "application/json" `
+            -Body $body
+
+          $scanId = $scan.scan_id
+
+          if (-not $scanId) {
+            throw "SASTIFY did not return a scan ID."
           }
+
+          Write-Host "Scan ID: $scanId"
+
+          $completed = $false
+
+          for ($i = 1; $i -le 180; $i++) {
+            Start-Sleep -Seconds 10
+
+            $status = Invoke-RestMethod `
+              -Uri "$env:SASTIFY_URL/api/ci/v1/scans/$scanId" `
+              -Headers $headers
+
+            Write-Host "Scan status: $($status.status)"
+
+            if ($status.status -eq "done") {
+              $completed = $true
+              break
+            }
+
+            if ($status.status -in @("error", "cancelled")) {
+              throw "SASTIFY scan failed: $($status | ConvertTo-Json -Depth 10)"
+            }
+          }
+
+          if (-not $completed) {
+            throw "Timed out waiting for SASTIFY scan."
+          }
+
+          Write-Host "SAST scan completed successfully."
+
+          Write-Host "Retrieving security gate..."
+
+          $gate = Invoke-RestMethod `
+            -Uri "$env:SASTIFY_URL/api/ci/v1/scans/$scanId/gate?block_at=HIGH" `
+            -Headers $headers
+
+          $gate | ConvertTo-Json -Depth 10 | Write-Host
+
+          if ($gate.gate -ne "PASS") {
+            throw "SASTIFY security gate FAILED. Blocking the pipeline."
+          }
+
+          Write-Host "SASTIFY security gate PASSED."
