@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Validate GitHub CI metadata
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         env:
           CI_EVENT_NAME: ${{ github.event_name }}
           COMMIT_SHA: ${{ github.sha }}
