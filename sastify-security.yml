@@ -1,53 +1,4 @@
-name: SASTIFY Security Scan
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  sastify:
-    runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 60
-    steps:
-      - name: Validate GitHub CI metadata
-        shell: powershell
-        env:
-          CI_EVENT_NAME: ${{ github.event_name }}
-          COMMIT_SHA: ${{ github.sha }}
-          ACTOR: ${{ github.actor }}
-          WORKFLOW_NAME: ${{ github.workflow }}
-          SOURCE_BRANCH: ${{ github.ref_name }}
-          TARGET_BRANCH: ${{ github.ref_name }}
-          REPOSITORY_NAME: ${{ github.repository }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $shortSha = if ($env:COMMIT_SHA) { $env:COMMIT_SHA.Substring(0, [Math]::Min(12, $env:COMMIT_SHA.Length)) } else { '<empty>' }
-          Write-Host "GitHub metadata: repository=[$($env:REPOSITORY_NAME)] event=[$($env:CI_EVENT_NAME)] actor=[$($env:ACTOR)] commit=[$shortSha] workflow=[$($env:WORKFLOW_NAME)]"
-          if ([string]::IsNullOrWhiteSpace($env:CI_EVENT_NAME) -or
-              [string]::IsNullOrWhiteSpace($env:COMMIT_SHA) -or
-              [string]::IsNullOrWhiteSpace($env:ACTOR)) {
-            throw 'GitHub Actions did not provide one or more required CI metadata values. No scan was submitted.'
-          }
-
-      - name: Trigger SASTIFY scan and enforce security gate
-        shell: powershell
-        env:
-          SASTIFY_URL: http://localhost:5000
-          SASTIFY_TOKEN: ${{ secrets.SASTIFY_TOKEN }}
-          REPOSITORY_URL: https://github.com/${{ github.repository }}.git
-          PROJECT_NAME: ${{ github.repository }}
-          BRANCH: ${{ github.ref_name }}
-          PROVIDER: github
-          REPO_USERNAME: x-access-token
-          REPO_TOKEN: ${{ github.token }}
-          BLOCK_AT: HIGH
-          SCAN_SCOPE: sast
-          DETECTION_ENGINE: both
-          RUN_SCA: 'false'
-          USE_NVD: 'false'
-          RETAIN_SOURCE: 'true'
+RETAIN_SOURCE: 'true'
           CI_EVENT_NAME: ${{ github.event_name }}
           COMMIT_SHA: ${{ github.sha }}
           PR_NUMBER: ''
@@ -59,38 +10,114 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           try {
-            if ([string]::IsNullOrWhiteSpace($env:SASTIFY_TOKEN)) {
-              throw 'GitHub secret SASTIFY_TOKEN is not configured.'
-            }
-            if ([string]::IsNullOrWhiteSpace($env:REPOSITORY_URL)) {
-              throw 'REPOSITORY_URL is empty.'
+            foreach ($name in @('SASTIFY_TOKEN', 'REPOSITORY_URL', 'PROJECT_NAME', 'BRANCH', 'CI_EVENT_NAME', 'COMMIT_SHA', 'ACTOR')) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ([string]::IsNullOrWhiteSpace($value)) {
+                throw "Required environment variable '$name' is empty. No scan was submitted."
+              }
             }
 
-            $eventName = $env:CI_EVENT_NAME.Trim()
-            $commitSha = $env:COMMIT_SHA.Trim()
-            $actor = $env:ACTOR.Trim()
-            $workflowName = $env:WORKFLOW_NAME.Trim()
-            $sourceBranch = $env:SOURCE_BRANCH.Trim()
-            $targetBranch = $env:TARGET_BRANCH.Trim()
-
-            if ([string]::IsNullOrWhiteSpace($eventName) -or
-                [string]::IsNullOrWhiteSpace($commitSha) -or
-                [string]::IsNullOrWhiteSpace($actor)) {
-              throw 'Required GitHub metadata is empty. Scan was not submitted.'
+            if ($env:COMMIT_SHA -notmatch '^[0-9a-fA-F]{40}$') {
+              throw 'COMMIT_SHA must be a full 40-character hexadecimal Git commit ID.'
             }
 
             $baseUrl = $env:SASTIFY_URL.TrimEnd('/')
             $headers = @{ Authorization = "Bearer $($env:SASTIFY_TOKEN)" }
-            $runSca = [System.Convert]::ToBoolean($env:RUN_SCA)
-            $useNvd = [System.Convert]::ToBoolean($env:USE_NVD)
-            $retainSource = [System.Convert]::ToBoolean($env:RETAIN_SOURCE)
             $prNumber = $null
             if (-not [string]::IsNullOrWhiteSpace($env:PR_NUMBER)) {
-              $prNumber = [int]$env:PR_NUMBER
+              $parsedPrNumber = 0
+              if (-not [int]::TryParse($env:PR_NUMBER, [ref]$parsedPrNumber) -or $parsedPrNumber -lt 1) {
+                throw 'PR_NUMBER must be empty or a positive integer.'
+              }
+              $prNumber = $parsedPrNumber
             }
 
+            # These property names intentionally match app.py:ci_create_scan().
             $payload = [ordered]@{
-              project = $env:PROJECT_NAME
-              repository_url = $env:REPOSITORY_URL
-              branch = $env:BRANCH
-              provider = $env:PROVIDER
+              project          = $env:PROJECT_NAME
+              repository_url   = $env:REPOSITORY_URL
+              branch           = $env:BRANCH
+              provider         = $env:PROVIDER
+              scope            = $env:SCAN_SCOPE
+              detection_engine = $env:DETECTION_ENGINE
+              run_sca          = [System.Convert]::ToBoolean($env:RUN_SCA)
+              use_nvd          = [System.Convert]::ToBoolean($env:USE_NVD)
+              retain_source    = [System.Convert]::ToBoolean($env:RETAIN_SOURCE)
+              repo_username    = $env:REPO_USERNAME
+              repo_token       = $env:REPO_TOKEN
+              block_at         = $env:BLOCK_AT
+              event_name       = $env:CI_EVENT_NAME
+              commit_sha       = $env:COMMIT_SHA
+              pr_number        = $prNumber
+              actor            = $env:ACTOR
+              workflow_name    = $env:WORKFLOW_NAME
+              source_branch    = $env:SOURCE_BRANCH
+              target_branch    = $env:TARGET_BRANCH
+            }
+
+            $jsonBody = $payload | ConvertTo-Json -Depth 8
+            Write-Host 'Submitting repository scan to SASTIFY...'
+            Write-Host "Metadata being submitted: event=[$($payload.event_name)] actor=[$($payload.actor)] commit=[$($payload.commit_sha.Substring(0,12))] workflow=[$($payload.workflow_name)] source_branch=[$($payload.source_branch)] target_branch=[$($payload.target_branch)]"
+
+            $scanResponse = Invoke-RestMethod -Method Post `
+              -Uri "$baseUrl/api/ci/v1/scans" `
+              -Headers $headers `
+              -ContentType 'application/json; charset=utf-8' `
+              -Body $jsonBody `
+              -TimeoutSec 60
+
+            $scanId = [string]$scanResponse.scan_id
+            if ([string]::IsNullOrWhiteSpace($scanId)) {
+              throw 'SASTIFY accepted the request but did not return a scan_id.'
+            }
+
+            Write-Host "SASTIFY scan ID: $scanId"
+            $maxAttempts = 180
+            $pollSeconds = 10
+            $status = $null
+
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+              $status = Invoke-RestMethod -Method Get `
+                -Uri "$baseUrl/api/ci/v1/scans/$scanId" `
+                -Headers $headers `
+                -TimeoutSec 30
+
+              $state = [string]$status.status
+              Write-Host "SASTIFY status: $state (attempt $attempt/$maxAttempts)"
+
+              if ($state -eq 'done') {
+                break
+              }
+              if ($state -in @('error', 'cancelled')) {
+                throw "SASTIFY scan ended with status '$state'. Message: $($status.message)"
+              }
+
+              Start-Sleep -Seconds $pollSeconds
+            }
+
+            if ($null -eq $status -or [string]$status.status -ne 'done') {
+              throw "Timed out waiting for SASTIFY scan $scanId."
+            }
+
+            $gateUri = "$baseUrl/api/ci/v1/scans/$scanId/gate?block_at=$([Uri]::EscapeDataString($env:BLOCK_AT))"
+            $gate = Invoke-RestMethod -Method Get -Uri $gateUri -Headers $headers -TimeoutSec 30
+
+            Write-Host 'SASTIFY security gate response:'
+            Write-Host ($gate | ConvertTo-Json -Depth 8)
+
+            if ([string]$gate.gate -notin @('PASS', 'FAIL')) {
+              throw "SASTIFY returned an unexpected security gate value: '$($gate.gate)'"
+            }
+
+            if ([string]$gate.gate -eq 'FAIL') {
+              Write-Host 'SASTIFY security gate FAILED. Blocking findings were detected.' -ForegroundColor Red
+              exit 1
+            }
+
+            Write-Host 'SASTIFY security gate PASSED.' -ForegroundColor Green
+            exit 0
+          }
+          catch {
+            Write-Host "SASTIFY CI error: $($_.Exception.Message)" -ForegroundColor Red
+            exit 2
+          }
