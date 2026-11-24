@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Submit SASTIFY scan and enforce security gate
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         env:
           SASTIFY_URL: ${{ secrets.SASTIFY_URL }}
           SASTIFY_TOKEN: ${{ secrets.SASTIFY_TOKEN }}
