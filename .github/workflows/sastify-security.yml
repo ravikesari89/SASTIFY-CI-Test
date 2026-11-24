@@ -47,7 +47,7 @@ jobs:
           Write-Host 'GitHub metadata preflight passed.'
 
       - name: Trigger SASTIFY scan and enforce security gate
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         env:
           SASTIFY_URL: http://localhost:5000
           SASTIFY_TOKEN: ${{ secrets.SASTIFY_TOKEN }}
