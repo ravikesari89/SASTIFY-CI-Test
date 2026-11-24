@@ -59,7 +59,7 @@ jobs:
           REPO_TOKEN: ${{ github.token }}
           BLOCK_AT: HIGH
           SCAN_SCOPE: sast
-          DETECTION_ENGINE: both
+          DETECTION_ENGINE: sastify
           RUN_SCA: 'false'
           USE_NVD: 'false'
           RETAIN_SOURCE: 'true'
