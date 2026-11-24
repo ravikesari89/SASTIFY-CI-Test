@@ -1,4 +1,68 @@
-RETAIN_SOURCE: 'true'
+name: SASTIFY Security Scan
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sastify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+
+    steps:
+      - name: Validate GitHub CI metadata
+        shell: powershell
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          SOURCE_BRANCH: ${{ github.ref_name }}
+          TARGET_BRANCH: ${{ github.ref_name }}
+          REPOSITORY_NAME: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $required = @{
+            event = $env:CI_EVENT_NAME
+            commit = $env:COMMIT_SHA
+            actor = $env:ACTOR
+            repository = $env:REPOSITORY_NAME
+          }
+
+          foreach ($entry in $required.GetEnumerator()) {
+            if ([string]::IsNullOrWhiteSpace([string]$entry.Value)) {
+              throw "Required GitHub metadata is empty: $($entry.Key). No scan was submitted."
+            }
+          }
+
+          if ($env:COMMIT_SHA -notmatch '^[0-9a-fA-F]{40}$') {
+            throw 'GitHub commit SHA is not a full 40-character commit ID.'
+          }
+
+          $shortSha = $env:COMMIT_SHA.Substring(0, 12)
+          Write-Host "GitHub metadata: repository=[$($env:REPOSITORY_NAME)] event=[$($env:CI_EVENT_NAME)] actor=[$($env:ACTOR)] commit=[$shortSha] workflow=[$($env:WORKFLOW_NAME)] source_branch=[$($env:SOURCE_BRANCH)] target_branch=[$($env:TARGET_BRANCH)]"
+          Write-Host 'GitHub metadata preflight passed.'
+
+      - name: Trigger SASTIFY scan and enforce security gate
+        shell: powershell
+        env:
+          SASTIFY_URL: http://localhost:5000
+          SASTIFY_TOKEN: ${{ secrets.SASTIFY_TOKEN }}
+          REPOSITORY_URL: https://github.com/${{ github.repository }}.git
+          PROJECT_NAME: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          PROVIDER: github
+          REPO_USERNAME: x-access-token
+          REPO_TOKEN: ${{ github.token }}
+          BLOCK_AT: HIGH
+          SCAN_SCOPE: sast
+          DETECTION_ENGINE: both
+          RUN_SCA: 'false'
+          USE_NVD: 'false'
+          RETAIN_SOURCE: 'true'
           CI_EVENT_NAME: ${{ github.event_name }}
           COMMIT_SHA: ${{ github.sha }}
           PR_NUMBER: ''
