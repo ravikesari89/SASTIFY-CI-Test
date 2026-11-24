@@ -1,0 +1,119 @@
+name: SASTIFY Security Scan
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sastify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+    steps:
+      - name: Trigger SASTIFY scan and enforce security gate
+        shell: powershell
+        env:
+          SASTIFY_URL: http://localhost:5000
+          SASTIFY_TOKEN: ${{ secrets.SASTIFY_TOKEN }}
+          REPOSITORY_URL: https://github.com/${{ github.repository }}.git
+          PROJECT_NAME: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          PROVIDER: github
+          REPO_USERNAME: x-access-token
+          REPO_TOKEN: ${{ github.token }}
+          BLOCK_AT: HIGH
+          SCAN_SCOPE: sast
+          DETECTION_ENGINE: both
+          RUN_SCA: 'false'
+          USE_NVD: 'false'
+          RETAIN_SOURCE: 'true'
+          CI_EVENT_NAME: ${{ github.event_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          PR_NUMBER: ''
+          ACTOR: ${{ github.actor }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          SOURCE_BRANCH: ${{ github.ref_name }}
+          TARGET_BRANCH: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          try {
+            if ([string]::IsNullOrWhiteSpace($env:SASTIFY_TOKEN)) {
+              throw 'GitHub secret SASTIFY_TOKEN is not configured.'
+            }
+            if ([string]::IsNullOrWhiteSpace($env:REPOSITORY_URL)) {
+              throw 'REPOSITORY_URL is empty.'
+            }
+
+            $baseUrl = $env:SASTIFY_URL.TrimEnd('/')
+            $headers = @{ Authorization = "Bearer $($env:SASTIFY_TOKEN)" }
+            $runSca = [System.Convert]::ToBoolean($env:RUN_SCA)
+            $useNvd = [System.Convert]::ToBoolean($env:USE_NVD)
+            $retainSource = [System.Convert]::ToBoolean($env:RETAIN_SOURCE)
+            $prNumber = $null
+            if (-not [string]::IsNullOrWhiteSpace($env:PR_NUMBER)) {
+              $prNumber = [int]$env:PR_NUMBER
+            }
+
+            $payload = [ordered]@{
+              project = $env:PROJECT_NAME
+              repository_url = $env:REPOSITORY_URL
+              branch = $env:BRANCH
+              provider = $env:PROVIDER
+              scope = $env:SCAN_SCOPE
+              detection_engine = $env:DETECTION_ENGINE
+              run_sca = $runSca
+              use_nvd = $useNvd
+              retain_source = $retainSource
+              repo_username = $env:REPO_USERNAME
+              repo_token = $env:REPO_TOKEN
+              event_name = $env:CI_EVENT_NAME
+              commit_sha = $env:COMMIT_SHA
+              pr_number = $prNumber
+              actor = $env:ACTOR
+              workflow_name = $env:WORKFLOW_NAME
+              source_branch = $env:SOURCE_BRANCH
+              target_branch = $env:TARGET_BRANCH
+              block_at = $env:BLOCK_AT
+            }
+
+            $json = $payload | ConvertTo-Json -Depth 8
+            Write-Host 'Submitting repository scan to SASTIFY...'
+            $created = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/ci/v1/scans" -Headers $headers -ContentType 'application/json' -Body $json -TimeoutSec 90
+            $scanId = [string]$created.scan_id
+            if ([string]::IsNullOrWhiteSpace($scanId)) {
+              throw 'SASTIFY did not return a scan_id.'
+            }
+            Write-Host "SASTIFY scan ID: $scanId"
+
+            $maxAttempts = 180
+            $pollSeconds = 10
+            $status = $null
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+              $status = Invoke-RestMethod -Method Get -Uri "$baseUrl/api/ci/v1/scans/$scanId" -Headers $headers -TimeoutSec 30
+              Write-Host "SASTIFY status: $($status.status) | Progress: $($status.progress)% | $($status.message)"
+              if ($status.status -eq 'done') { break }
+              if ($status.status -in @('error', 'cancelled')) {
+                throw "SASTIFY scan ended with status '$($status.status)': $($status.message)"
+              }
+              Start-Sleep -Seconds $pollSeconds
+            }
+
+            if ($null -eq $status -or $status.status -ne 'done') {
+              throw "Timed out waiting for SASTIFY scan $scanId."
+            }
+
+            $gate = Invoke-RestMethod -Method Get -Uri "$baseUrl/api/ci/v1/scans/$scanId/gate?block_at=$($env:BLOCK_AT)" -Headers $headers -TimeoutSec 30
+            Write-Host "Security gate: $($gate.gate) | Blocking findings: $($gate.blocking_findings) | Threshold: $($gate.block_at)"
+            if ($gate.gate -ne 'PASS') {
+              Write-Host 'SASTIFY security gate failed. Blocking findings were detected.' -ForegroundColor Red
+              exit 1
+            }
+            Write-Host 'SASTIFY security gate passed.'
+            exit 0
+          }
+          catch {
+            Write-Host "SASTIFY CI error: $($_.Exception.Message)" -ForegroundColor Red
+            exit 2
+          }
