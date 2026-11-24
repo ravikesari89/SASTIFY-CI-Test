@@ -1,4 +1,4 @@
-name: Validate GitHub CI metadata
+name: SASTIFY Security Scan
 
 on:
   workflow_dispatch:
